@@ -1,3 +1,5 @@
+use async_trait::async_trait;
+
 use crate::error::IoError;
 
 /// Provides IO error as an associated type.
@@ -12,6 +14,7 @@ pub trait IoBase {
 /// The `Read` trait allows for reading bytes from a source.
 ///
 /// It is based on the `std::io::Read` trait.
+#[async_trait]
 pub trait Read: IoBase {
     /// Pull some bytes from this source into the specified buffer, returning how many bytes were read.
     ///
@@ -36,7 +39,7 @@ pub trait Read: IoBase {
     /// then it must be guaranteed that no bytes were read.
     /// An error for which `IoError::is_interrupted` returns true is non-fatal and the read operation should be retried
     /// if there is nothing else to do.
-    fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error>;
+    async fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error>;
 
     /// Read the exact number of bytes required to fill `buf`.
     ///
@@ -53,9 +56,9 @@ pub trait Read: IoBase {
     ///
     /// If this function returns an error, it is unspecified how many bytes it has read, but it will never read more
     /// than would be necessary to completely fill the buffer.
-    fn read_exact(&mut self, mut buf: &mut [u8]) -> Result<(), Self::Error> {
+    async fn read_exact(&mut self, mut buf: &mut [u8]) -> Result<(), Self::Error> {
         while !buf.is_empty() {
-            match self.read(buf) {
+            match self.read(buf).await {
                 Ok(0) => break,
                 Ok(n) => {
                     let tmp = buf;
@@ -77,6 +80,7 @@ pub trait Read: IoBase {
 /// The `Write` trait allows for writing bytes into the sink.
 ///
 /// It is based on the `std::io::Write` trait.
+#[async_trait]
 pub trait Write: IoBase {
     /// Write a buffer into this writer, returning how many bytes were written.
     ///
@@ -85,7 +89,7 @@ pub trait Write: IoBase {
     /// Each call to write may generate an I/O error indicating that the operation could not be completed. If an error
     /// is returned then no bytes in the buffer were written to this writer.
     /// It is not considered an error if the entire buffer could not be written to this writer.
-    fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error>;
+    async fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error>;
 
     /// Attempts to write an entire buffer into this writer.
     ///
@@ -99,9 +103,9 @@ pub trait Write: IoBase {
     ///
     /// This function will return the first error for which `IoError::is_interrupted` method returns false that `write`
     /// returns.
-    fn write_all(&mut self, mut buf: &[u8]) -> Result<(), Self::Error> {
+    async fn write_all(&mut self, mut buf: &[u8]) -> Result<(), Self::Error> {
         while !buf.is_empty() {
-            match self.write(buf) {
+            match self.write(buf).await {
                 Ok(0) => {
                     debug!("failed to write whole buffer in write_all");
                     return Err(Self::Error::new_write_zero_error());
@@ -119,7 +123,7 @@ pub trait Write: IoBase {
     /// # Errors
     ///
     /// It is considered an error if not all bytes could be written due to I/O errors or EOF being reached.
-    fn flush(&mut self) -> Result<(), Self::Error>;
+    async fn flush(&mut self) -> Result<(), Self::Error>;
 }
 
 /// Enumeration of possible methods to seek within an I/O object.
@@ -201,26 +205,28 @@ impl<T> IoBase for StdIoWrapper<T> {
 }
 
 #[cfg(feature = "std")]
-impl<T: std::io::Read> Read for StdIoWrapper<T> {
-    fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
+#[async_trait]
+impl<T: std::io::Read + std::marker::Send> Read for StdIoWrapper<T> {
+    async fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
         self.inner.read(buf)
     }
-    fn read_exact(&mut self, buf: &mut [u8]) -> Result<(), Self::Error> {
+    async fn read_exact(&mut self, buf: &mut [u8]) -> Result<(), Self::Error> {
         self.inner.read_exact(buf)
     }
 }
 
 #[cfg(feature = "std")]
-impl<T: std::io::Write> Write for StdIoWrapper<T> {
-    fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
+#[async_trait]
+impl<T: std::io::Write + std::marker::Send> Write for StdIoWrapper<T> {
+    async fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
         self.inner.write(buf)
     }
 
-    fn write_all(&mut self, buf: &[u8]) -> Result<(), Self::Error> {
+    async fn write_all(&mut self, buf: &[u8]) -> Result<(), Self::Error> {
         self.inner.write_all(buf)
     }
 
-    fn flush(&mut self) -> Result<(), Self::Error> {
+    async fn flush(&mut self) -> Result<(), Self::Error> {
         self.inner.flush()
     }
 }
@@ -241,52 +247,52 @@ impl<T> From<T> for StdIoWrapper<T> {
 
 pub(crate) trait ReadLeExt {
     type Error;
-    fn read_u8(&mut self) -> Result<u8, Self::Error>;
-    fn read_u16_le(&mut self) -> Result<u16, Self::Error>;
-    fn read_u32_le(&mut self) -> Result<u32, Self::Error>;
+    async fn read_u8(&mut self) -> Result<u8, Self::Error>;
+    async fn read_u16_le(&mut self) -> Result<u16, Self::Error>;
+    async fn read_u32_le(&mut self) -> Result<u32, Self::Error>;
 }
 
-impl<T: Read> ReadLeExt for T {
+impl<T: Read + Send> ReadLeExt for T {
     type Error = <Self as IoBase>::Error;
 
-    fn read_u8(&mut self) -> Result<u8, Self::Error> {
+    async fn read_u8(&mut self) -> Result<u8, Self::Error> {
         let mut buf = [0_u8; 1];
-        self.read_exact(&mut buf)?;
+        self.read_exact(&mut buf).await?;
         Ok(buf[0])
     }
 
-    fn read_u16_le(&mut self) -> Result<u16, Self::Error> {
+    async fn read_u16_le(&mut self) -> Result<u16, Self::Error> {
         let mut buf = [0_u8; 2];
-        self.read_exact(&mut buf)?;
+        self.read_exact(&mut buf).await?;
         Ok(u16::from_le_bytes(buf))
     }
 
-    fn read_u32_le(&mut self) -> Result<u32, Self::Error> {
+    async fn read_u32_le(&mut self) -> Result<u32, Self::Error> {
         let mut buf = [0_u8; 4];
-        self.read_exact(&mut buf)?;
+        self.read_exact(&mut buf).await?;
         Ok(u32::from_le_bytes(buf))
     }
 }
 
 pub(crate) trait WriteLeExt {
     type Error;
-    fn write_u8(&mut self, n: u8) -> Result<(), Self::Error>;
-    fn write_u16_le(&mut self, n: u16) -> Result<(), Self::Error>;
-    fn write_u32_le(&mut self, n: u32) -> Result<(), Self::Error>;
+    async fn write_u8(&mut self, n: u8) -> Result<(), Self::Error>;
+    async fn write_u16_le(&mut self, n: u16) -> Result<(), Self::Error>;
+    async fn write_u32_le(&mut self, n: u32) -> Result<(), Self::Error>;
 }
 
-impl<T: Write> WriteLeExt for T {
+impl<T: Write + Send> WriteLeExt for T {
     type Error = <Self as IoBase>::Error;
 
-    fn write_u8(&mut self, n: u8) -> Result<(), Self::Error> {
-        self.write_all(&[n])
+    async fn write_u8(&mut self, n: u8) -> Result<(), Self::Error> {
+        self.write_all(&[n]).await
     }
 
-    fn write_u16_le(&mut self, n: u16) -> Result<(), Self::Error> {
-        self.write_all(&n.to_le_bytes())
+    async fn write_u16_le(&mut self, n: u16) -> Result<(), Self::Error> {
+        self.write_all(&n.to_le_bytes()).await
     }
 
-    fn write_u32_le(&mut self, n: u32) -> Result<(), Self::Error> {
-        self.write_all(&n.to_le_bytes())
+    async fn write_u32_le(&mut self, n: u32) -> Result<(), Self::Error> {
+        self.write_all(&n.to_le_bytes()).await
     }
 }
