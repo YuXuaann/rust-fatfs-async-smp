@@ -44,20 +44,20 @@ pub(crate) struct BiosParameterBlock {
 }
 
 impl BiosParameterBlock {
-    fn deserialize<R: Read>(rdr: &mut R) -> Result<Self, R::Error> {
+    async fn deserialize<R: Read>(rdr: &mut R) -> Result<Self, R::Error> {
         let mut bpb = Self {
-            bytes_per_sector: rdr.read_u16_le()?,
-            sectors_per_cluster: rdr.read_u8()?,
-            reserved_sectors: rdr.read_u16_le()?,
-            fats: rdr.read_u8()?,
-            root_entries: rdr.read_u16_le()?,
-            total_sectors_16: rdr.read_u16_le()?,
-            media: rdr.read_u8()?,
-            sectors_per_fat_16: rdr.read_u16_le()?,
-            sectors_per_track: rdr.read_u16_le()?,
-            heads: rdr.read_u16_le()?,
-            hidden_sectors: rdr.read_u32_le()?,
-            total_sectors_32: rdr.read_u32_le()?,
+            bytes_per_sector: rdr.read_u16_le().await?,
+            sectors_per_cluster: rdr.read_u8().await?,
+            reserved_sectors: rdr.read_u16_le().await?,
+            fats: rdr.read_u8().await?,
+            root_entries: rdr.read_u16_le().await?,
+            total_sectors_16: rdr.read_u16_le().await?,
+            media: rdr.read_u8().await?,
+            sectors_per_fat_16: rdr.read_u16_le().await?,
+            sectors_per_track: rdr.read_u16_le().await?,
+            heads: rdr.read_u16_le().await?,
+            hidden_sectors: rdr.read_u32_le().await?,
+            total_sectors_32: rdr.read_u32_le().await?,
             ..Self::default()
         };
 

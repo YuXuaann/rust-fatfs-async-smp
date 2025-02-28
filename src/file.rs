@@ -208,10 +208,10 @@ impl<'a, IO: ReadWriteSeek, TP, OCC> File<'a, IO, TP, OCC> {
         self.first_cluster
     }
 
-    fn flush(&mut self) -> Result<(), Error<IO::Error>> {
+    async fn flush(&mut self) -> Result<(), Error<IO::Error>> {
         self.flush_dir_entry()?;
         let mut disk = self.fs.disk.borrow_mut();
-        disk.flush()?;
+        disk.flush().await?;
         Ok(())
     }
 
@@ -235,7 +235,7 @@ impl<IO: ReadWriteSeek, TP: TimeProvider, OCC> File<'_, IO, TP, OCC> {
 
 impl<IO: ReadWriteSeek, TP, OCC> Drop for File<'_, IO, TP, OCC> {
     fn drop(&mut self) {
-        if let Err(err) = self.flush() {
+        if let Err(err) = self.flush().await {
             error!("flush failed {:?}", err);
         }
     }

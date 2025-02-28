@@ -62,6 +62,7 @@ extern crate alloc;
 #[macro_use]
 mod log_macros;
 
+mod async_utils;
 mod boot_sector;
 mod dir;
 mod dir_entry;

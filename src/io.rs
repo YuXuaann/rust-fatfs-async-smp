@@ -1,6 +1,7 @@
-use async_trait::async_trait;
-
 use crate::error::IoError;
+
+use alloc::boxed::Box;
+use async_trait::async_trait;
 
 /// Provides IO error as an associated type.
 ///
