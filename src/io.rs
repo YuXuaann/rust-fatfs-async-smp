@@ -9,7 +9,7 @@ use async_trait::async_trait;
 /// `Seek`.
 pub trait IoBase {
     /// Type of errors returned by input/output operations.
-    type Error: IoError;
+    type Error: IoError + Send;
 }
 
 /// The `Read` trait allows for reading bytes from a source.
