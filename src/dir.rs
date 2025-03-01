@@ -1,3 +1,4 @@
+use alloc::sync::Arc;
 #[cfg(all(not(feature = "std"), feature = "alloc", feature = "lfn"))]
 use alloc::vec::Vec;
 use core::num;
@@ -23,14 +24,14 @@ use crate::time::TimeProvider;
 
 const LFN_PADDING: u16 = 0xFFFF;
 
-pub(crate) enum DirRawStream<'a, IO: ReadWriteSeek + Send, TP, OCC> {
-    File(File<'a, IO, TP, OCC>),
-    Root(DiskSlice<FsIoAdapter<'a, IO, TP, OCC>, FsIoAdapter<'a, IO, TP, OCC>>),
+pub(crate) enum DirRawStream<IO: ReadWriteSeek + Send, TP, OCC> {
+    File(File<IO, TP, OCC>),
+    Root(DiskSlice<FsIoAdapter<IO, TP, OCC>, FsIoAdapter<IO, TP, OCC>>),
 }
 
-unsafe impl<IO: ReadWriteSeek + Send, TP, OCC> Send for DirRawStream<'_, IO, TP, OCC> {}
+unsafe impl<IO: ReadWriteSeek + Send, TP, OCC> Send for DirRawStream<IO, TP, OCC> {}
 
-impl<IO: ReadWriteSeek + Send, TP, OCC> DirRawStream<'_, IO, TP, OCC> {
+impl<IO: ReadWriteSeek + Send, TP, OCC> DirRawStream<IO, TP, OCC> {
     fn abs_pos(&self) -> Option<u64> {
         match self {
             DirRawStream::File(file) => file.abs_pos(),
@@ -54,7 +55,7 @@ impl<IO: ReadWriteSeek + Send, TP, OCC> DirRawStream<'_, IO, TP, OCC> {
 }
 
 // Note: derive cannot be used because of invalid bounds. See: https://github.com/rust-lang/rust/issues/26925
-impl<IO: ReadWriteSeek + Send, TP, OCC> Clone for DirRawStream<'_, IO, TP, OCC> {
+impl<IO: ReadWriteSeek + Send, TP, OCC> Clone for DirRawStream<IO, TP, OCC> {
     fn clone(&self) -> Self {
         match self {
             DirRawStream::File(file) => DirRawStream::File(file.clone()),
@@ -63,12 +64,12 @@ impl<IO: ReadWriteSeek + Send, TP, OCC> Clone for DirRawStream<'_, IO, TP, OCC> 
     }
 }
 
-impl<IO: ReadWriteSeek + Send, TP, OCC> IoBase for DirRawStream<'_, IO, TP, OCC> {
+impl<IO: ReadWriteSeek + Send, TP, OCC> IoBase for DirRawStream<IO, TP, OCC> {
     type Error = Error<IO::Error>;
 }
 
 #[async_trait]
-impl<IO: ReadWriteSeek + Send, TP: TimeProvider, OCC> Read for DirRawStream<'_, IO, TP, OCC> {
+impl<IO: ReadWriteSeek + Send, TP: TimeProvider, OCC> Read for DirRawStream<IO, TP, OCC> {
     async fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
         match self {
             DirRawStream::File(file) => file.read(buf).await,
@@ -78,7 +79,7 @@ impl<IO: ReadWriteSeek + Send, TP: TimeProvider, OCC> Read for DirRawStream<'_, 
 }
 
 #[async_trait]
-impl<IO: ReadWriteSeek + Send, TP: TimeProvider, OCC> Write for DirRawStream<'_, IO, TP, OCC> {
+impl<IO: ReadWriteSeek + Send, TP: TimeProvider, OCC> Write for DirRawStream<IO, TP, OCC> {
     async fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
         match self {
             DirRawStream::File(file) => file.write(buf).await,
@@ -93,7 +94,7 @@ impl<IO: ReadWriteSeek + Send, TP: TimeProvider, OCC> Write for DirRawStream<'_,
     }
 }
 
-impl<IO: ReadWriteSeek + Send, TP, OCC> Seek for DirRawStream<'_, IO, TP, OCC> {
+impl<IO: ReadWriteSeek + Send, TP, OCC> Seek for DirRawStream<IO, TP, OCC> {
     fn seek(&mut self, pos: SeekFrom) -> Result<u64, Self::Error> {
         match self {
             DirRawStream::File(file) => file.seek(pos),
@@ -109,8 +110,8 @@ fn split_path(path: &str) -> (&str, Option<&str>) {
     })
 }
 
-enum DirEntryOrShortName<'a, IO: ReadWriteSeek + Send, TP, OCC> {
-    DirEntry(DirEntry<'a, IO, TP, OCC>),
+enum DirEntryOrShortName<IO: ReadWriteSeek + Send, TP, OCC> {
+    DirEntry(DirEntry<IO, TP, OCC>),
     ShortName([u8; SFN_SIZE]),
 }
 
@@ -118,31 +119,31 @@ enum DirEntryOrShortName<'a, IO: ReadWriteSeek + Send, TP, OCC> {
 ///
 /// This struct is created by the `open_dir` or `create_dir` methods on `Dir`.
 /// The root directory is returned by the `root_dir` method on `FileSystem`.
-pub struct Dir<'a, IO: ReadWriteSeek + Send, TP, OCC> {
-    stream: DirRawStream<'a, IO, TP, OCC>,
-    fs: &'a FileSystem<IO, TP, OCC>,
+pub struct Dir<IO: ReadWriteSeek + Send, TP, OCC> {
+    stream: DirRawStream<IO, TP, OCC>,
+    fs: Arc<FileSystem<IO, TP, OCC>>,
 }
 
-impl<'a, IO: ReadWriteSeek + Send, TP, OCC> Dir<'a, IO, TP, OCC> {
-    pub(crate) fn new(stream: DirRawStream<'a, IO, TP, OCC>, fs: &'a FileSystem<IO, TP, OCC>) -> Self {
+impl<IO: ReadWriteSeek + Send, TP, OCC> Dir<IO, TP, OCC> {
+    pub(crate) fn new(stream: DirRawStream<IO, TP, OCC>, fs: Arc<FileSystem<IO, TP, OCC>>) -> Self {
         Dir { stream, fs }
     }
 
     /// Creates directory entries iterator.
     #[must_use]
     #[allow(clippy::iter_not_returning_iterator)]
-    pub fn iter(&self) -> DirIter<'a, IO, TP, OCC> {
-        DirIter::new(self.stream.clone(), self.fs, true)
+    pub fn iter(&self) -> DirIter<IO, TP, OCC> {
+        DirIter::new(self.stream.clone(), self.fs.clone(), true)
     }
 }
 
-impl<'a, IO: ReadWriteSeek + Send, TP: TimeProvider, OCC: OemCpConverter> Dir<'a, IO, TP, OCC> {
+impl<IO: ReadWriteSeek + Send, TP: TimeProvider, OCC: OemCpConverter> Dir<IO, TP, OCC> {
     fn find_entry(
         &self,
         name: &str,
         is_dir: Option<bool>,
         mut short_name_gen: Option<&mut ShortNameGenerator>,
-    ) -> Result<DirEntry<'a, IO, TP, OCC>, Error<IO::Error>> {
+    ) -> Result<DirEntry<IO, TP, OCC>, Error<IO::Error>> {
         for r in self.iter() {
             let e = r?;
             // compare name ignoring case
@@ -167,8 +168,8 @@ impl<'a, IO: ReadWriteSeek + Send, TP: TimeProvider, OCC: OemCpConverter> Dir<'a
     }
 
     #[allow(clippy::type_complexity)]
-    pub(crate) fn find_volume_entry(&self) -> Result<Option<DirEntry<'a, IO, TP, OCC>>, Error<IO::Error>> {
-        for r in DirIter::new(self.stream.clone(), self.fs, false) {
+    pub(crate) fn find_volume_entry(&self) -> Result<Option<DirEntry<IO, TP, OCC>>, Error<IO::Error>> {
+        for r in DirIter::new(self.stream.clone(), self.fs.clone(), false) {
             let e = r?;
             if e.data.is_volume() {
                 return Ok(Some(e));
@@ -181,7 +182,7 @@ impl<'a, IO: ReadWriteSeek + Send, TP: TimeProvider, OCC: OemCpConverter> Dir<'a
         &self,
         name: &str,
         is_dir: Option<bool>,
-    ) -> Result<DirEntryOrShortName<'a, IO, TP, OCC>, Error<IO::Error>> {
+    ) -> Result<DirEntryOrShortName<IO, TP, OCC>, Error<IO::Error>> {
         let mut short_name_gen = ShortNameGenerator::new(name);
         loop {
             // find matching entry
@@ -236,7 +237,7 @@ impl<'a, IO: ReadWriteSeek + Send, TP: TimeProvider, OCC: OemCpConverter> Dir<'a
     /// * `Error::NotFound` will be returned if `path` points to a non-existing directory entry.
     /// * `Error::InvalidInput` will be returned if `path` points to a file that is a directory.
     /// * `Error::Io` will be returned if the underlying storage object returned an I/O error.
-    pub fn open_file(&self, path: &str) -> Result<File<'a, IO, TP, OCC>, Error<IO::Error>> {
+    pub fn open_file(&self, path: &str) -> Result<File<IO, TP, OCC>, Error<IO::Error>> {
         trace!("Dir::open_file {}", path);
         // traverse path
         let (name, rest_opt) = split_path(path);
@@ -263,7 +264,7 @@ impl<'a, IO: ReadWriteSeek + Send, TP: TimeProvider, OCC: OemCpConverter> Dir<'a
     /// * `Error::UnsupportedFileNameCharacter` will be returned if the file name contains an invalid character.
     /// * `Error::NotEnoughSpace` will be returned if there is not enough free space to create a new file.
     /// * `Error::Io` will be returned if the underlying storage object returned an I/O error.
-    pub async fn create_file(&self, path: &str) -> Result<File<'a, IO, TP, OCC>, Error<IO::Error>> {
+    pub async fn create_file(&self, path: &str) -> Result<File<IO, TP, OCC>, Error<IO::Error>> {
         trace!("Dir::create_file {}", path);
         // traverse path
         let (name, rest_opt) = split_path(path);
@@ -416,7 +417,7 @@ impl<'a, IO: ReadWriteSeek + Send, TP: TimeProvider, OCC: OemCpConverter> Dir<'a
     pub async fn rename(
         &self,
         src_path: &str,
-        dst_dir: &Dir<'a, IO, TP, OCC>,
+        dst_dir: &Dir<IO, TP, OCC>,
         dst_path: &str,
     ) -> Result<(), Error<IO::Error>> {
         trace!("Dir::rename {} {}", src_path, dst_path);
@@ -439,7 +440,7 @@ impl<'a, IO: ReadWriteSeek + Send, TP: TimeProvider, OCC: OemCpConverter> Dir<'a
     async fn rename_internal(
         &self,
         src_name: &str,
-        dst_dir: &Dir<'a, IO, TP, OCC>,
+        dst_dir: &Dir<IO, TP, OCC>,
         dst_name: &str,
     ) -> Result<(), Error<IO::Error>> {
         trace!("Dir::rename_internal {} {}", src_name, dst_name);
@@ -478,7 +479,7 @@ impl<'a, IO: ReadWriteSeek + Send, TP: TimeProvider, OCC: OemCpConverter> Dir<'a
         Ok(())
     }
 
-    async fn find_free_entries(&self, num_entries: u32) -> Result<DirRawStream<'a, IO, TP, OCC>, Error<IO::Error>> {
+    async fn find_free_entries(&self, num_entries: u32) -> Result<DirRawStream<IO, TP, OCC>, Error<IO::Error>> {
         let mut stream = self.stream.clone();
         let mut first_free: u32 = 0;
         let mut num_free: u32 = 0;
@@ -542,7 +543,7 @@ impl<'a, IO: ReadWriteSeek + Send, TP: TimeProvider, OCC: OemCpConverter> Dir<'a
         &self,
         lfn_utf16: &LfnBuffer,
         short_name: &[u8; SFN_SIZE],
-    ) -> Result<(DirRawStream<'a, IO, TP, OCC>, u64), Error<IO::Error>> {
+    ) -> Result<(DirRawStream<IO, TP, OCC>, u64), Error<IO::Error>> {
         // get short name checksum
         let lfn_chsum = lfn_checksum(short_name);
         // create LFN entries generator
@@ -558,7 +559,7 @@ impl<'a, IO: ReadWriteSeek + Send, TP: TimeProvider, OCC: OemCpConverter> Dir<'a
         Ok((stream, start_pos))
     }
 
-    async fn alloc_sfn_entry(&self) -> Result<(DirRawStream<'a, IO, TP, OCC>, u64), Error<IO::Error>> {
+    async fn alloc_sfn_entry(&self) -> Result<(DirRawStream<IO, TP, OCC>, u64), Error<IO::Error>> {
         let mut stream = self.find_free_entries(1).await?;
         let start_pos = stream.seek(io::SeekFrom::Current(0))?;
         Ok((stream, start_pos))
@@ -568,7 +569,7 @@ impl<'a, IO: ReadWriteSeek + Send, TP: TimeProvider, OCC: OemCpConverter> Dir<'a
         &self,
         name: &str,
         raw_entry: DirFileEntryData,
-    ) -> Result<DirEntry<'a, IO, TP, OCC>, Error<IO::Error>> {
+    ) -> Result<DirEntry<IO, TP, OCC>, Error<IO::Error>> {
         trace!("Dir::write_entry {}", name);
         // check if name doesn't contain unsupported characters
         validate_long_name(name)?;
@@ -600,7 +601,7 @@ impl<'a, IO: ReadWriteSeek + Send, TP: TimeProvider, OCC: OemCpConverter> Dir<'a
             short_name,
             #[cfg(feature = "lfn")]
             lfn_utf16,
-            fs: self.fs,
+            fs: self.fs.clone(),
             entry_pos: start_abs_pos,
             offset_range: (start_pos, end_pos),
         })
@@ -608,11 +609,11 @@ impl<'a, IO: ReadWriteSeek + Send, TP: TimeProvider, OCC: OemCpConverter> Dir<'a
 }
 
 // Note: derive cannot be used because of invalid bounds. See: https://github.com/rust-lang/rust/issues/26925
-impl<IO: ReadWriteSeek + Send, TP: TimeProvider, OCC: OemCpConverter> Clone for Dir<'_, IO, TP, OCC> {
+impl<IO: ReadWriteSeek + Send, TP: TimeProvider, OCC: OemCpConverter> Clone for Dir<IO, TP, OCC> {
     fn clone(&self) -> Self {
         Self {
             stream: self.stream.clone(),
-            fs: self.fs,
+            fs: self.fs.clone(),
         }
     }
 }
@@ -620,15 +621,15 @@ impl<IO: ReadWriteSeek + Send, TP: TimeProvider, OCC: OemCpConverter> Clone for 
 /// An iterator over the directory entries.
 ///
 /// This struct is created by the `iter` method on `Dir`.
-pub struct DirIter<'a, IO: ReadWriteSeek + Send, TP, OCC> {
-    stream: DirRawStream<'a, IO, TP, OCC>,
-    fs: &'a FileSystem<IO, TP, OCC>,
+pub struct DirIter<IO: ReadWriteSeek + Send, TP, OCC> {
+    stream: DirRawStream<IO, TP, OCC>,
+    fs: Arc<FileSystem<IO, TP, OCC>>,
     skip_volume: bool,
     err: bool,
 }
 
-impl<'a, IO: ReadWriteSeek + Send, TP, OCC> DirIter<'a, IO, TP, OCC> {
-    fn new(stream: DirRawStream<'a, IO, TP, OCC>, fs: &'a FileSystem<IO, TP, OCC>, skip_volume: bool) -> Self {
+impl<IO: ReadWriteSeek + Send, TP, OCC> DirIter<IO, TP, OCC> {
+    fn new(stream: DirRawStream<IO, TP, OCC>, fs: Arc<FileSystem<IO, TP, OCC>>, skip_volume: bool) -> Self {
         DirIter {
             stream,
             fs,
@@ -638,7 +639,7 @@ impl<'a, IO: ReadWriteSeek + Send, TP, OCC> DirIter<'a, IO, TP, OCC> {
     }
 }
 
-impl<'a, IO: ReadWriteSeek + Send, TP: TimeProvider, OCC> DirIter<'a, IO, TP, OCC> {
+impl<IO: ReadWriteSeek + Send, TP: TimeProvider, OCC> DirIter<IO, TP, OCC> {
     fn should_skip_entry(&self, raw_entry: &DirEntryData) -> bool {
         if raw_entry.is_deleted() {
             return true;
@@ -650,7 +651,7 @@ impl<'a, IO: ReadWriteSeek + Send, TP: TimeProvider, OCC> DirIter<'a, IO, TP, OC
     }
 
     #[allow(clippy::type_complexity)]
-    async fn read_dir_entry(&mut self) -> Result<Option<DirEntry<'a, IO, TP, OCC>>, Error<IO::Error>> {
+    async fn read_dir_entry(&mut self) -> Result<Option<DirEntry<IO, TP, OCC>>, Error<IO::Error>> {
         trace!("DirIter::read_dir_entry");
         let mut lfn_builder = LongNameBuilder::new();
         let mut offset = self.stream.seek(SeekFrom::Current(0))?;
@@ -689,7 +690,7 @@ impl<'a, IO: ReadWriteSeek + Send, TP: TimeProvider, OCC> DirIter<'a, IO, TP, OC
                         short_name,
                         #[cfg(feature = "lfn")]
                         lfn_utf16: lfn_builder.into_buf(),
-                        fs: self.fs,
+                        fs: self.fs.clone(),
                         entry_pos: abs_pos,
                         offset_range: (begin_offset, offset),
                     }));
@@ -705,19 +706,19 @@ impl<'a, IO: ReadWriteSeek + Send, TP: TimeProvider, OCC> DirIter<'a, IO, TP, OC
 }
 
 // Note: derive cannot be used because of invalid bounds. See: https://github.com/rust-lang/rust/issues/26925
-impl<IO: ReadWriteSeek + Send, TP, OCC> Clone for DirIter<'_, IO, TP, OCC> {
+impl<IO: ReadWriteSeek + Send, TP, OCC> Clone for DirIter<IO, TP, OCC> {
     fn clone(&self) -> Self {
         Self {
             stream: self.stream.clone(),
-            fs: self.fs,
+            fs: self.fs.clone(),
             err: self.err,
             skip_volume: self.skip_volume,
         }
     }
 }
 
-impl<'a, IO: ReadWriteSeek + Send, TP: TimeProvider, OCC> Iterator for DirIter<'a, IO, TP, OCC> {
-    type Item = Result<DirEntry<'a, IO, TP, OCC>, Error<IO::Error>>;
+impl<IO: ReadWriteSeek + Send, TP: TimeProvider, OCC> Iterator for DirIter<IO, TP, OCC> {
+    type Item = Result<DirEntry<IO, TP, OCC>, Error<IO::Error>>;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.err {

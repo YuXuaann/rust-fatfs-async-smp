@@ -1,5 +1,6 @@
 #[cfg(all(not(feature = "std"), feature = "alloc"))]
 use alloc::string::String;
+use alloc::sync::Arc;
 use bitflags::bitflags;
 use core::char;
 use core::convert::TryInto;
@@ -519,16 +520,19 @@ impl DirEntryEditor {
 
     pub(crate) async fn flush<IO: ReadWriteSeek + Send, TP, OCC>(
         &mut self,
-        fs: &FileSystem<IO, TP, OCC>,
+        fs: Arc<FileSystem<IO, TP, OCC>>,
     ) -> Result<(), IO::Error> {
         if self.dirty {
-            self.write(fs).await?;
+            self.write(fs.clone()).await?;
             self.dirty = false;
         }
         Ok(())
     }
 
-    async fn write<IO: ReadWriteSeek + Send, TP, OCC>(&self, fs: &FileSystem<IO, TP, OCC>) -> Result<(), IO::Error> {
+    async fn write<IO: ReadWriteSeek + Send, TP, OCC>(
+        &self,
+        fs: Arc<FileSystem<IO, TP, OCC>>,
+    ) -> Result<(), IO::Error> {
         let mut disk = fs.disk.lock();
         disk.seek(io::SeekFrom::Start(self.pos))?;
         self.data.serialize(&mut *disk).await
@@ -539,18 +543,18 @@ impl DirEntryEditor {
 ///
 /// `DirEntry` is returned by `DirIter` when reading a directory.
 #[derive(Clone)]
-pub struct DirEntry<'a, IO: ReadWriteSeek + Send, TP, OCC> {
+pub struct DirEntry<IO: ReadWriteSeek + Send, TP, OCC> {
     pub(crate) data: DirFileEntryData,
     pub(crate) short_name: ShortName,
     #[cfg(feature = "lfn")]
     pub(crate) lfn_utf16: LfnBuffer,
     pub(crate) entry_pos: u64,
     pub(crate) offset_range: (u64, u64),
-    pub(crate) fs: &'a FileSystem<IO, TP, OCC>,
+    pub(crate) fs: Arc<FileSystem<IO, TP, OCC>>,
 }
 
 #[allow(clippy::len_without_is_empty)]
-impl<'a, IO: ReadWriteSeek + Send, TP, OCC: OemCpConverter> DirEntry<'a, IO, TP, OCC> {
+impl<IO: ReadWriteSeek + Send, TP, OCC: OemCpConverter> DirEntry<IO, TP, OCC> {
     /// Returns short file name.
     ///
     /// Non-ASCII characters are replaced by the replacement character (U+FFFD).
@@ -632,9 +636,9 @@ impl<'a, IO: ReadWriteSeek + Send, TP, OCC: OemCpConverter> DirEntry<'a, IO, TP,
     ///
     /// Will panic if this is not a file.
     #[must_use]
-    pub fn to_file(&self) -> File<'a, IO, TP, OCC> {
+    pub fn to_file(&self) -> File<IO, TP, OCC> {
         assert!(!self.is_dir(), "Not a file entry");
-        File::new(self.first_cluster(), Some(self.editor()), self.fs)
+        File::new(self.first_cluster(), Some(self.editor()), self.fs.clone())
     }
 
     /// Returns `Dir` struct for this entry.
@@ -643,12 +647,12 @@ impl<'a, IO: ReadWriteSeek + Send, TP, OCC: OemCpConverter> DirEntry<'a, IO, TP,
     ///
     /// Will panic if this is not a directory.
     #[must_use]
-    pub fn to_dir(&self) -> Dir<'a, IO, TP, OCC> {
+    pub fn to_dir(&self) -> Dir<IO, TP, OCC> {
         assert!(self.is_dir(), "Not a directory entry");
         match self.first_cluster() {
             Some(n) => {
-                let file = File::new(Some(n), Some(self.editor()), self.fs);
-                Dir::new(DirRawStream::File(file), self.fs)
+                let file = File::new(Some(n), Some(self.editor()), self.fs.clone());
+                Dir::new(DirRawStream::File(file), self.fs.clone())
             }
             None => self.fs.root_dir(),
         }
@@ -724,7 +728,7 @@ impl<'a, IO: ReadWriteSeek + Send, TP, OCC: OemCpConverter> DirEntry<'a, IO, TP,
     }
 }
 
-impl<IO: ReadWriteSeek + Send, TP, OCC> fmt::Debug for DirEntry<'_, IO, TP, OCC> {
+impl<IO: ReadWriteSeek + Send, TP, OCC> fmt::Debug for DirEntry<IO, TP, OCC> {
     fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
         self.data.fmt(f)
     }

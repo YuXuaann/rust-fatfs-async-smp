@@ -466,20 +466,20 @@ impl<IO: Read + Write + Seek + Send, TP, OCC> FileSystem<IO, TP, OCC> {
         self.bpb.clusters_from_bytes(bytes)
     }
 
-    fn fat_slice(&self) -> impl ReadWriteSeek<Error = Error<IO::Error>> + '_ {
-        let io = FsIoAdapter { fs: self };
+    fn fat_slice(self: &Arc<Self>) -> impl ReadWriteSeek<Error = Error<IO::Error>> {
+        let io = FsIoAdapter { fs: self.clone() };
         fat_slice(io, &self.bpb)
     }
 
     pub(crate) fn cluster_iter(
-        &self,
+        self: &Arc<Self>,
         cluster: u32,
-    ) -> ClusterIterator<impl ReadWriteSeek<Error = Error<IO::Error>> + '_, IO::Error> {
+    ) -> ClusterIterator<impl ReadWriteSeek<Error = Error<IO::Error>>, IO::Error> {
         let disk_slice = self.fat_slice();
         ClusterIterator::new(disk_slice, self.fat_type, cluster)
     }
 
-    pub(crate) async fn truncate_cluster_chain(&self, cluster: u32) -> Result<(), Error<IO::Error>> {
+    pub(crate) async fn truncate_cluster_chain(self: &Arc<Self>, cluster: u32) -> Result<(), Error<IO::Error>> {
         let mut iter = self.cluster_iter(cluster);
         let num_free = iter.truncate().await?;
         let mut fs_info = self.fs_info.lock();
@@ -487,7 +487,7 @@ impl<IO: Read + Write + Seek + Send, TP, OCC> FileSystem<IO, TP, OCC> {
         Ok(())
     }
 
-    pub(crate) async fn free_cluster_chain(&self, cluster: u32) -> Result<(), Error<IO::Error>> {
+    pub(crate) async fn free_cluster_chain(self: &Arc<Self>, cluster: u32) -> Result<(), Error<IO::Error>> {
         let mut iter = self.cluster_iter(cluster);
         let num_free = iter.free().await?;
         let mut fs_info = self.fs_info.lock();
@@ -495,7 +495,11 @@ impl<IO: Read + Write + Seek + Send, TP, OCC> FileSystem<IO, TP, OCC> {
         Ok(())
     }
 
-    pub(crate) async fn alloc_cluster(&self, prev_cluster: Option<u32>, zero: bool) -> Result<u32, Error<IO::Error>> {
+    pub(crate) async fn alloc_cluster(
+        self: &Arc<Self>,
+        prev_cluster: Option<u32>,
+        zero: bool,
+    ) -> Result<u32, Error<IO::Error>> {
         trace!("alloc_cluster");
         let hint = self.fs_info.lock().next_free_cluster;
         let cluster = {
@@ -518,7 +522,7 @@ impl<IO: Read + Write + Seek + Send, TP, OCC> FileSystem<IO, TP, OCC> {
     /// # Errors
     ///
     /// `Error::Io` will be returned if the underlying storage object returned an I/O error.
-    pub async fn read_status_flags(&self) -> Result<FsStatusFlags, Error<IO::Error>> {
+    pub async fn read_status_flags(self: &Arc<Self>) -> Result<FsStatusFlags, Error<IO::Error>> {
         let bpb_status = self.bpb.status_flags();
         let fat_status = read_fat_flags(&mut self.fat_slice(), self.fat_type).await?;
         Ok(FsStatusFlags {
@@ -535,7 +539,7 @@ impl<IO: Read + Write + Seek + Send, TP, OCC> FileSystem<IO, TP, OCC> {
     /// # Errors
     ///
     /// `Error::Io` will be returned if the underlying storage object returned an I/O error.
-    pub async fn stats(&self) -> Result<FileSystemStats, Error<IO::Error>> {
+    pub async fn stats(self: &Arc<Self>) -> Result<FileSystemStats, Error<IO::Error>> {
         let free_clusters_option = self.fs_info.lock().free_cluster_count;
         let free_clusters = if let Some(n) = free_clusters_option {
             n
@@ -550,7 +554,7 @@ impl<IO: Read + Write + Seek + Send, TP, OCC> FileSystem<IO, TP, OCC> {
     }
 
     /// Forces free clusters recalculation.
-    async fn recalc_free_clusters(&self) -> Result<u32, Error<IO::Error>> {
+    async fn recalc_free_clusters(self: &Arc<Self>) -> Result<u32, Error<IO::Error>> {
         let mut fat = self.fat_slice();
         let free_cluster_count = count_free_clusters(&mut fat, self.fat_type, self.total_clusters).await?;
         self.fs_info.lock().set_free_cluster_count(free_cluster_count);
@@ -612,7 +616,7 @@ impl<IO: Read + Write + Seek + Send, TP, OCC> FileSystem<IO, TP, OCC> {
     }
 
     /// Returns a root directory object allowing for futher penetration of a filesystem structure.
-    pub fn root_dir(&self) -> Dir<IO, TP, OCC> {
+    pub fn root_dir(self: &Arc<Self>) -> Dir<IO, TP, OCC> {
         trace!("root_dir");
         let root_rdr = {
             match self.fat_type {
@@ -621,12 +625,14 @@ impl<IO: Read + Write + Seek + Send, TP, OCC> FileSystem<IO, TP, OCC> {
                     self.root_dir_sectors,
                     1,
                     &self.bpb,
-                    FsIoAdapter { fs: self },
+                    FsIoAdapter { fs: self.clone() },
                 )),
-                FatType::Fat32 => DirRawStream::File(File::new(Some(self.bpb.root_dir_first_cluster), None, self)),
+                FatType::Fat32 => {
+                    DirRawStream::File(File::new(Some(self.bpb.root_dir_first_cluster), None, self.clone()))
+                }
             }
         };
-        Dir::new(root_rdr, self)
+        Dir::new(root_rdr, self.clone())
     }
 }
 
@@ -655,7 +661,7 @@ impl<IO: ReadWriteSeek + Send, TP: TimeProvider, OCC: OemCpConverter> FileSystem
     ///
     /// `Error::Io` will be returned if the underlying storage object returned an I/O error.
     #[cfg(feature = "alloc")]
-    pub fn read_volume_label_from_root_dir(&self) -> Result<Option<String>, Error<IO::Error>> {
+    pub fn read_volume_label_from_root_dir(self: &Arc<Self>) -> Result<Option<String>, Error<IO::Error>> {
         // Note: DirEntry::file_short_name() cannot be used because it interprets name as 8.3
         // (adds dot before an extension)
         let volume_label_opt = self.read_volume_label_from_root_dir_as_bytes()?;
@@ -682,7 +688,9 @@ impl<IO: ReadWriteSeek + Send, TP: TimeProvider, OCC: OemCpConverter> FileSystem
     /// # Errors
     ///
     /// `Error::Io` will be returned if the underlying storage object returned an I/O error.
-    pub fn read_volume_label_from_root_dir_as_bytes(&self) -> Result<Option<[u8; SFN_SIZE]>, Error<IO::Error>> {
+    pub fn read_volume_label_from_root_dir_as_bytes(
+        self: &Arc<Self>,
+    ) -> Result<Option<[u8; SFN_SIZE]>, Error<IO::Error>> {
         let entry_opt = self.root_dir().find_volume_entry()?;
         Ok(entry_opt.map(|e| *e.raw_short_name()))
     }
@@ -697,23 +705,23 @@ impl<IO: ReadWriteSeek + Send, TP, OCC> Drop for FileSystem<IO, TP, OCC> {
     }
 }
 
-pub(crate) struct FsIoAdapter<'a, IO: ReadWriteSeek + Send, TP, OCC> {
-    fs: &'a FileSystem<IO, TP, OCC>,
+pub(crate) struct FsIoAdapter<IO: ReadWriteSeek + Send, TP, OCC> {
+    fs: Arc<FileSystem<IO, TP, OCC>>,
 }
 
-impl<IO: ReadWriteSeek + Send, TP, OCC> IoBase for FsIoAdapter<'_, IO, TP, OCC> {
+impl<IO: ReadWriteSeek + Send, TP, OCC> IoBase for FsIoAdapter<IO, TP, OCC> {
     type Error = IO::Error;
 }
 
 #[async_trait]
-impl<IO: ReadWriteSeek + Send, TP, OCC> Read for FsIoAdapter<'_, IO, TP, OCC> {
+impl<IO: ReadWriteSeek + Send, TP, OCC> Read for FsIoAdapter<IO, TP, OCC> {
     async fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
         self.fs.disk.lock().read(buf).await
     }
 }
 
 #[async_trait]
-impl<IO: ReadWriteSeek + Send, TP, OCC> Write for FsIoAdapter<'_, IO, TP, OCC> {
+impl<IO: ReadWriteSeek + Send, TP, OCC> Write for FsIoAdapter<IO, TP, OCC> {
     async fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
         let size = self.fs.disk.lock().write(buf).await?;
         if size > 0 {
@@ -727,16 +735,16 @@ impl<IO: ReadWriteSeek + Send, TP, OCC> Write for FsIoAdapter<'_, IO, TP, OCC> {
     }
 }
 
-impl<IO: ReadWriteSeek + Send, TP, OCC> Seek for FsIoAdapter<'_, IO, TP, OCC> {
+impl<IO: ReadWriteSeek + Send, TP, OCC> Seek for FsIoAdapter<IO, TP, OCC> {
     fn seek(&mut self, pos: SeekFrom) -> Result<u64, Self::Error> {
         self.fs.disk.lock().seek(pos)
     }
 }
 
 // Note: derive cannot be used because of invalid bounds. See: https://github.com/rust-lang/rust/issues/26925
-impl<IO: ReadWriteSeek + Send, TP, OCC> Clone for FsIoAdapter<'_, IO, TP, OCC> {
+impl<IO: ReadWriteSeek + Send, TP, OCC> Clone for FsIoAdapter<IO, TP, OCC> {
     fn clone(&self) -> Self {
-        FsIoAdapter { fs: self.fs }
+        FsIoAdapter { fs: self.fs.clone() }
     }
 }
 
