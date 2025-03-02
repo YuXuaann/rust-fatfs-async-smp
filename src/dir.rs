@@ -269,11 +269,7 @@ impl<IO: ReadWriteSeek + Send, TP: TimeProvider, OCC: OemCpConverter> Dir<IO, TP
         // traverse path
         let (name, rest_opt) = split_path(path);
         if let Some(rest) = rest_opt {
-            return self
-                .find_entry(name, Some(true), None)?
-                .to_dir()
-                .create_file(rest)
-                .await;
+            return Box::pin(self.find_entry(name, Some(true), None)?.to_dir().create_file(rest)).await;
         }
         // this is final filename in the path
         let r = self.check_for_existence(name, Some(false))?;
@@ -306,7 +302,7 @@ impl<IO: ReadWriteSeek + Send, TP: TimeProvider, OCC: OemCpConverter> Dir<IO, TP
         // traverse path
         let (name, rest_opt) = split_path(path);
         if let Some(rest) = rest_opt {
-            return self.find_entry(name, Some(true), None)?.to_dir().create_dir(rest).await;
+            return Box::pin(self.find_entry(name, Some(true), None)?.to_dir().create_dir(rest)).await;
         }
         // this is final filename in the path
         let r = self.check_for_existence(name, Some(true))?;

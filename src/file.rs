@@ -9,6 +9,7 @@ use crate::time::{Date, DateTime, TimeProvider};
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 use async_trait::async_trait;
+use console::{print, println};
 
 const MAX_FILE_SIZE: u32 = u32::MAX;
 
@@ -182,11 +183,15 @@ impl<IO: ReadWriteSeek + Send, TP, OCC> File<IO, TP, OCC> {
         }
     }
 
-    fn size(&self) -> Option<u32> {
+    pub fn size(&self) -> Option<u32> {
         match self.entry {
             Some(ref e) => e.inner().size(),
             None => None,
         }
+    }
+
+    pub fn offset(&self) -> u32 {
+        self.offset
     }
 
     fn is_dir(&self) -> bool {
